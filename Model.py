@@ -16,16 +16,16 @@ class ModelCompilation(torch.nn.Module):
         match model_name:
             case "detr1":
                 self.model = self.create_model_detr(num_classes=5, num_queries=20)
-                self.model.load_state_dict(torch.load('models/detr1.pth'))
+                self.model.load_state_dict(torch.load('models/detr1.pth', map_location=self.device))
             case "detr2":
                 self.model = self.create_model_detr(num_classes=2, num_queries=200)
-                self.model.load_state_dict(torch.load('models/detr_uav_vsai_result.pth'))
+                self.model.load_state_dict(torch.load('models/detr_uav_vsai_result.pth', map_location=self.device))
             case "detr3":
                 self.model = self.create_model_detr(num_classes=3, num_queries=200)
-                self.model.load_state_dict(torch.load('models/detr_drone_v3.pth'))
+                self.model.load_state_dict(torch.load('models/detr_drone_v3.pth', map_location=self.device))
             case "detr4":
                 self.model = self.create_model_detr(num_classes=2, num_queries=300)
-                self.model.load_state_dict(torch.load('models/detr_uav.pth'))
+                self.model.load_state_dict(torch.load('models/detr_uav.pth', map_location=self.device))
 
 
     def create_model_detr(self, num_classes, num_queries):

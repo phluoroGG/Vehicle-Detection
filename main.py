@@ -1,12 +1,13 @@
+import math
 import sys
 
 import numpy as np
 import torch
 from PIL import Image
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QFileDialog, QMenuBar, QAction, \
-    QSlider, QActionGroup, QHBoxLayout, QScrollArea
-from PyQt5.QtGui import QPixmap
+    QSlider, QActionGroup, QHBoxLayout, QScrollArea, QLineEdit
+from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
 from PyQt5.QtGui import QImage
 import cv2
 from torchvision.ops import nms, box_convert
@@ -60,17 +61,27 @@ class VideoPlayer(QWidget):
         self.video_path = ""
         self.video_capture = None
         self.is_playing = False
-        self.is_stopped = False
         self.current_frame = None
         self.start_frame = 0
         self.model = None
         self.prev_objects = []
         self.objects = []
         self.labels = []
+        self.pos = None
+        self.pixmap = None
+
+        self.height = None
+        self.angleSlope = None
+        self.angleVert = None
+        self.angleHoris = None
+        self.lat = None
+        self.lon = None
+        self.angleDirection = None
 
         self.video_label = QLabel()
         self.video_label.setMinimumSize(640, 480)
         self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.mousePressEvent = self.get_pos
 
         self.play_button = QPushButton("Старт")
         self.stop_button = QPushButton("Стоп")
@@ -82,10 +93,7 @@ class VideoPlayer(QWidget):
         self.play_button.clicked.connect(self.play_video)
         self.stop_button.clicked.connect(self.stop_video)
 
-        detections_layout = QVBoxLayout()
-
         scroll = QScrollArea()
-        detections_layout.addWidget(scroll)
         scroll.setWidgetResizable(True)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -94,18 +102,84 @@ class VideoPlayer(QWidget):
         self.scrollLayout = QVBoxLayout()
         scrollContent.setLayout(self.scrollLayout)
 
+        detections_layout = QVBoxLayout()
+        detections_layout.addWidget(scroll)
+
         scroll.setWidget(scrollContent)
 
         self.scrollLayout.setAlignment(Qt.AlignTop)
         scroll.setMinimumSize(200, 20)
         scroll.setMaximumSize(200, 3000)
 
-        video_layout = QHBoxLayout()
-        video_layout.addLayout(detections_layout)
-        video_layout.addWidget(self.video_label)
+        label1 = QLabel()
+        label1.setText("Введите высоту камеры (в метрах):")
+        self.e1 = QLineEdit()
+        self.e1.setMinimumSize(200, 20)
+        self.e1.setMaximumSize(200, 3000)
+        label2 = QLabel()
+        label2.setText("Введите угол наклона камеры:")
+        self.e2 = QLineEdit()
+        self.e2.setMinimumSize(200, 20)
+        self.e2.setMaximumSize(200, 3000)
+        label3 = QLabel()
+        label3.setText("Введите вертикальный угол \n обзора камеры:")
+        self.e3 = QLineEdit()
+        self.e3.setMinimumSize(200, 20)
+        self.e3.setMaximumSize(200, 3000)
+
+        label4 = QLabel()
+        label4.setText("Введите горизонтальный угол \n обзора камеры:")
+        self.e4 = QLineEdit()
+        self.e4.setMinimumSize(200, 20)
+        self.e4.setMaximumSize(200, 3000)
+        label5 = QLabel()
+        label5.setText("Введите широту (Формат: ГГ.ГГГГ):")
+        self.e5 = QLineEdit()
+        self.e5.setMinimumSize(200, 20)
+        self.e5.setMaximumSize(200, 3000)
+        label6 = QLabel()
+        label6.setText("Введите долготу (Формат: ГГ.ГГГГ):")
+        self.e6 = QLineEdit()
+        self.e6.setMinimumSize(200, 20)
+        self.e6.setMaximumSize(200, 3000)
+        label7 = QLabel()
+        label7.setText("Введите угол направления камеры \n относительно востока:")
+        self.e7 = QLineEdit()
+        self.e7.setMinimumSize(200, 20)
+        self.e7.setMaximumSize(200, 3000)
+
+        self.confirm_button = QPushButton("Подтвердить")
+        self.confirm_button.clicked.connect(self.accept_coords)
+        self.confirm_button.setMinimumSize(200, 20)
+        self.confirm_button.setMaximumSize(200, 3000)
+
+        settings_layout = QVBoxLayout()
+        settings_layout.setAlignment(Qt.AlignTop)
+        settings_layout.addWidget(label1)
+        settings_layout.addWidget(self.e1)
+        settings_layout.addWidget(label2)
+        settings_layout.addWidget(self.e2)
+        settings_layout.addWidget(label3)
+        settings_layout.addWidget(self.e3)
+
+        settings_layout.addWidget(label4)
+        settings_layout.addWidget(self.e4)
+        settings_layout.addWidget(label5)
+        settings_layout.addWidget(self.e5)
+        settings_layout.addWidget(label6)
+        settings_layout.addWidget(self.e6)
+        settings_layout.addWidget(label7)
+        settings_layout.addWidget(self.e7)
+
+        settings_layout.addWidget(self.confirm_button)
+
+        data_layout = QHBoxLayout()
+        data_layout.addLayout(detections_layout)
+        data_layout.addWidget(self.video_label)
+        data_layout.addLayout(settings_layout)
 
         main_layout = QVBoxLayout()
-        main_layout.addLayout(video_layout)
+        main_layout.addLayout(data_layout)
         main_layout.addWidget(self.play_button)
         main_layout.addWidget(self.stop_button)
         main_layout.addWidget(self.slider)
@@ -117,6 +191,52 @@ class VideoPlayer(QWidget):
         self.timer.timeout.connect(self.update_slider_position)
 
         self.create_menu()
+
+    def accept_coords(self):
+        try:
+            self.height = float(self.e1.text())
+            self.angleSlope = float(self.e2.text())
+            self.angleVert = float(self.e3.text())
+            self.angleHoris = float(self.e4.text())
+        except:
+            pass
+        try:
+            self.lat = float(self.e5.text())
+            self.lon = float(self.e6.text())
+            self.angleDirection = float(self.e7.text())
+        except:
+            pass
+
+    def get_pos(self, event):
+        if self.start_frame != 0:
+            pos = event.pos()
+            width_label = self.video_label.frameGeometry().width()
+            height_label = self.video_label.frameGeometry().height()
+            height, width, channel = self.current_frame.shape
+            coeff = max(width / width_label, height / height_label)
+            x_offset = (width_label - width / coeff) / 2  # 0 if coeff = width / width_label
+            y_offset = (height_label - height / coeff) / 2  # 0 if coeff = height / height_label
+            self.pos = ((pos.x() - x_offset) / width * coeff,
+                        (pos.y() - y_offset) / height * coeff)
+            self.update()
+
+    def paintEvent(self, paint_event):
+        if self.start_frame != 0:
+            self.display_frame(self.current_frame)
+            painter = QPainter(self.video_label.pixmap())
+            pen = QPen()
+            pen.setWidth(8)
+            pen.setColor(QColor('red'))
+            painter.setPen(pen)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            if self.pos is not None:
+                width_label = self.video_label.frameGeometry().width()
+                height_label = self.video_label.frameGeometry().height()
+                height, width, channel = self.current_frame.shape
+                coeff = max(width / width_label, height / height_label)
+                pos = QPoint(int(self.pos[0] * width / coeff),
+                             int(self.pos[1] * height / coeff))
+                painter.drawPoint(pos)
 
     def create_menu(self):
         menu_bar = QMenuBar(self)
@@ -141,16 +261,23 @@ class VideoPlayer(QWidget):
         select_detr4.triggered.connect(self.create_model_detr4)
         model_menu.addAction(select_detr4)
         export_objects = menu_bar.addMenu("Экспорт")
-        export_txt = QAction(".txt", self)
+        export_txt = QAction("Сохранить .txt координаты в метрах", self)
         export_txt.triggered.connect(self.export_txt)
         export_objects.addAction(export_txt)
-        save_video = menu_bar.addMenu("Сохранить")
-        save_action = QAction("Сохранить видео", self)
+        save_txt_lat_lon = QAction("Сохранить .txt координаты широты и долготы", self)
+        save_txt_lat_lon.triggered.connect(self.save_txt_lat_lon)
+        export_objects.addAction(save_txt_lat_lon)
+        save_video = menu_bar.addMenu("Сохранить видео")
+        save_action = QAction("Только видео", self)
         save_action.triggered.connect(self.save_video)
         save_video.addAction(save_action)
-        save_with_txt_action = QAction("Сохранить с txt", self)
+        save_with_txt_action = QAction("Вместе с .txt координатами в метрах", self)
         save_with_txt_action.triggered.connect(self.save_video_txt)
         save_video.addAction(save_with_txt_action)
+        save_with_txt_action = QAction("Вместе с .txt координатами широты и долготы", self)
+        save_with_txt_action.triggered.connect(self.save_video_txt_lat_lon)
+        save_video.addAction(save_with_txt_action)
+
         alignment_group = QActionGroup(self)
         alignment_group.addAction(select_no_model)
         alignment_group.addAction(select_detr1)
@@ -165,6 +292,7 @@ class VideoPlayer(QWidget):
             self.video_capture = cv2.VideoCapture(self.video_path)
             self.is_playing = False
             self.current_frame = None
+            self.pos = None
             self.start_frame = 0
             self.slider.setMinimum(0)
             self.slider.setMaximum(int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT)))
@@ -215,37 +343,27 @@ class VideoPlayer(QWidget):
             self.start_frame = int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES))
             self.video_capture.release()
             self.video_capture = None
-            self.current_frame = None
-        self.is_stopped = True
 
     def play_video(self):
         if self.video_path and not self.is_playing:
-            if self.is_stopped:
-                self.video_capture = cv2.VideoCapture(self.video_path)
-                self.is_stopped = False
-                self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, self.start_frame)
+            self.video_capture = cv2.VideoCapture(self.video_path)
+            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, self.start_frame)
             self.is_playing = True
             fps = self.video_capture.get(cv2.CAP_PROP_FPS)
             self.timer.start(int(fps))
 
     def update_video(self):
-        if self.current_frame is None:
-            ret, frame = self.video_capture.read()
-            if ret:
-                self.current_frame = frame
-            else:
-                self.stop_video()
-                return
-
-        processed_frame = self.process_frame(self.current_frame)
-        self.update_labels()
-        self.display_frame(processed_frame)
-
         ret, frame = self.video_capture.read()
         if ret:
             self.current_frame = frame
         else:
             self.stop_video()
+            return
+
+        processed_frame = self.process_frame(self.current_frame)
+        self.current_frame = processed_frame
+        self.update_labels()
+        self.display_frame(processed_frame)
 
     def process_frame(self, frame, iou_threshold=0.1):
         if self.model_name == 'detr1':
@@ -363,29 +481,69 @@ class VideoPlayer(QWidget):
         for i in self.prev_objects:
             object_ = self.objects[i]
             lab = QLabel()
-            lab.setText("{}\n{}\n{}\n{}\n\n".format(object_.get_name(), object_.get_class(),
-                                                    object_.get_last_position()[0], object_.get_last_position()[1]))
+            if self.height is not None and self.angleSlope is not None and self.angleVert is not None and self.angleHoris is not None:
+                lab.setText("{}\n{}\n{}\n{}\n\n".format(object_.get_name(), object_.get_class(),
+                                                        *self.search_dx_dy(object_.get_last_position()[0],
+                                                                           object_.get_last_position()[1])))
+            else:
+                lab.setText("{}\n{}\n{}\n{}\n\n".format(object_.get_name(), object_.get_class(),
+                                                        object_.get_last_position()[0], object_.get_last_position()[1]))
             lab.setStyleSheet("font-size: 16px")
             lab.setMinimumSize(200, 80)
             lab.setAlignment(Qt.AlignTop)
             self.labels.append(lab)
             self.scrollLayout.addWidget(lab)
 
-    def export_txt(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Экспортировать объекты", "", "Текстовые файлы (*.txt)")
+    def _export_txt(self, path):
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Экспортировать объекты", "", "Текстовые файлы (*.txt)")
         if path:
             f = open(path, "w")
             for object_ in self.objects:
                 f.write("{} {} ".format(object_.get_name(), object_.get_class()))
-                f.write("; ".join(["({}, {})".format(i[0], i[1]) for i in object_.get_trajectory()]))
+                if self.height is not None and self.angleSlope is not None and self.angleVert is not None and self.angleHoris is not None:
+                    f.write("; ".join(
+                        ["({}, {})".format(*self.search_dx_dy(i[0], i[1])) for i in object_.get_trajectory()]))
+                else:
+                    f.write("; ".join(["({}, {})".format(i[0], i[1]) for i in object_.get_trajectory()]))
                 f.write("\n")
             f.close()
+
+    def export_txt(self):
+        self._export_txt(None)
+
+    def _save_txt_lat_lon(self, path):
+        if self.lat is None and self.lon is None and self.angleDirection:
+            return
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Экспортировать объекты", "", "Текстовые файлы (*.txt)")
+        if path:
+            f = open(path, "w")
+            for object_ in self.objects:
+                f.write("{} {} ".format(object_.get_name(), object_.get_class()))
+
+                if self.pos is None:
+                    f.write("; ".join(["({}, {})".format(
+                        *self.search_lat_lon(self.lat, self.lon, *self.search_dx_dy(i[0], i[1]), self.angleDirection))
+                        for i in object_.get_trajectory()]))
+                else:
+                    f.write("; ".join(["({}, {})".format(
+                        *self.search_from_point(i[0], i[1], self.pos[0], self.pos[1], self.lat, self.lon))
+                        for i in object_.get_trajectory()]))
+                f.write("\n")
+            f.close()
+
+    def save_txt_lat_lon(self):
+        self._save_txt_lat_lon(None)
 
     def save_video(self):
         self._save_video(None)
 
     def save_video_txt(self):
         self._save_video("txt")
+
+    def save_video_txt_lat_lon(self):
+        self._save_video("txt_lat_lon")
 
     def _save_video(self, info_format):
         if not self.video_path:
@@ -396,7 +554,8 @@ class VideoPlayer(QWidget):
             video_capture = cv2.VideoCapture(self.video_path)
             ret, frame = video_capture.read()
             height, width, _ = frame.shape
-            video_writer = cv2.VideoWriter(video_path, cv2.VideoWriter.fourcc('m','p','4','v'), video_capture.get(cv2.CAP_PROP_FPS), (width, height))
+            video_writer = cv2.VideoWriter(video_path, cv2.VideoWriter.fourcc('m', 'p', '4', 'v'),
+                                           video_capture.get(cv2.CAP_PROP_FPS), (width, height))
             while ret:
                 processed_frame = cv2.cvtColor(self.process_frame(frame), cv2.COLOR_BGR2RGB)
                 video_writer.write(processed_frame)
@@ -404,12 +563,45 @@ class VideoPlayer(QWidget):
             video_capture.release()
             if info_format == "txt":
                 path = video_path[:-3] + "txt"
-                f = open(path, "w")
-                for object_ in self.objects:
-                    f.write("{} {} ".format(object_.get_name(), object_.get_class()))
-                    f.write("; ".join(["({}, {})".format(i[0], i[1]) for i in object_.get_trajectory()]))
-                    f.write("\n")
-                f.close()
+                self._export_txt(path)
+            if info_format == "txt_lat_lon":
+                path = video_path[:-3] + "txt"
+                self._save_txt_lat_lon(path)
+
+    def search_lat_lon(self, lat1, lon1, dx, dy, angle):
+        # Радиус Земли в метрах
+        R = 6378137
+
+        # Конвертация смещения из метров в градусы
+        delta_lat = dy / R * (180 / math.pi)
+        delta_lon = dx / (R * math.cos(math.radians(lat1))) * (180 / math.pi)
+
+        # Учет угла
+        angle_rad = math.radians(angle)
+        delta_lat_adj = delta_lat * math.cos(angle_rad) - delta_lon * math.sin(angle_rad)
+        delta_lon_adj = delta_lat * math.sin(angle_rad) + delta_lon * math.cos(angle_rad)
+
+        # Координаты второго объекта
+        lat2 = lat1 + delta_lat_adj
+        lon2 = lon1 + delta_lon_adj
+        return lat2, lon2
+
+    def search_from_point(self, x_obj, y_obj, x_point, y_point, lat_point, lon_point):
+        """Поиск координат относительно точки"""
+        dx_point, dy_point = self.search_dx_dy(x_point, y_point)
+        lat_camera, lot_camera = self.search_lat_lon(lat_point, lon_point, dx_point, dy_point,
+                                                     self.angleDirection - 180)
+        dx_obj, dy_obj = self.search_dx_dy(x_obj, y_obj)
+        return self.search_lat_lon(lat_camera, lot_camera, dx_obj, dy_obj, self.angleDirection)
+
+    def search_dx_dy(self, x, y):
+        """Через сферическую систему координат"""
+        phi = math.radians(90 - math.atan(2 * x - 1) / math.radians(45) * self.angleHoris / 2)
+        theta_ = math.radians(math.atan(2 * y - 1) / math.radians(45) * self.angleVert / 2 + self.angleSlope + 90)
+        r = - self.height / math.cos(theta_)
+        dx = r * math.sin(theta_) * math.cos(phi)
+        dy = r * math.sin(theta_) * math.sin(phi)
+        return dx, dy
 
 
 if __name__ == '__main__':
